@@ -1,0 +1,178 @@
+name: RDP via Tailscale (Free + Stable)
+
+# ─────────────────────────────────────────────────────────────
+#  HOW IT WORKS:
+#  Tailscale creates a private VPN network between your PC
+#  and the GitHub runner. You connect via a stable machine
+#  name - no random ports, no paid plan needed.
+#
+#  ONE-TIME SETUP:
+#  1. Sign up free at https://tailscale.com
+#  2. Install Tailscale on YOUR local PC
+#  3. Go to https://login.tailscale.com/admin/settings/keys
+#     → Generate an Auth Key (check "Reusable" + "Ephemeral")
+#  4. Add GitHub Secret: TAILSCALE_AUTH_KEY = <your key>
+#  5. Push this file and run!
+#
+#  HOW TO CONNECT EACH TIME:
+#  - Run the workflow
+#  - Open your Tailscale app on local PC
+#  - You'll see a new device appear (e.g. "github-runner")
+#  - Click it to copy the Tailscale IP (e.g. 100.x.x.x)
+#  - Open Remote Desktop → paste that IP
+#  - Username: runneradmin | Password: p@ssw0rd!
+# ─────────────────────────────────────────────────────────────
+
+on:
+  workflow_dispatch:
+    inputs:
+      restore_checkpoint:
+        description: 'Restore from last checkpoint? (yes/no)'
+        required: false
+        default: 'yes'
+
+jobs:
+  rdp-tailscale:
+    runs-on: windows-latest
+    timeout-minutes: 360  # 6 hours max
+
+    steps:
+    # ─────────────────────────────────────────────
+    # STEP 1: Checkout repo
+    # ─────────────────────────────────────────────
+    - name: Check out the repository
+      uses: actions/checkout@v4
+
+    # ─────────────────────────────────────────────
+    # STEP 2: Restore checkpoint (your saved files)
+    # ─────────────────────────────────────────────
+    - name: Restore Checkpoint Cache
+      if: ${{ github.event.inputs.restore_checkpoint == 'yes' }}
+      uses: actions/cache@v4
+      with:
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data
+        key: rdp-checkpoint-tailscale
+        restore-keys: |
+          rdp-checkpoint-
+
+    - name: Check Checkpoint Status
+      run: |
+        if (Test-Path "C:\checkpoint_data\checkpoint.txt") {
+          $info = Get-Content "C:\checkpoint_data\checkpoint.txt"
+          Write-Host "=== CHECKPOINT FOUND ==="
+          Write-Host $info
+          Write-Host "========================"
+        } else {
+          Write-Host "No checkpoint - starting fresh session."
+        }
+
+    # ─────────────────────────────────────────────
+    # STEP 3: Enable Remote Desktop (RDP)
+    # ─────────────────────────────────────────────
+    - name: Enable RDP
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "p@ssw0rd!" -Force)
+        Write-Host "RDP Enabled."
+
+    # ─────────────────────────────────────────────
+    # STEP 4: Setup work folder + session info
+    # ─────────────────────────────────────────────
+    - name: Setup Work Directory
+      run: |
+        New-Item -ItemType Directory -Force -Path "C:\Users\runneradmin\Desktop\MyWork" | Out-Null
+        New-Item -ItemType Directory -Force -Path "C:\checkpoint_data" | Out-Null
+        $info = "Started: $(Get-Date)`nUsername: runneradmin`nPassword: p@ssw0rd!`nSave your files to: C:\Users\runneradmin\Desktop\MyWork"
+        Set-Content -Path "C:\Users\runneradmin\Desktop\SESSION_INFO.txt" -Value $info
+
+    # ─────────────────────────────────────────────
+    # STEP 5: Install & Connect Tailscale
+    # ─────────────────────────────────────────────
+    - name: Install Tailscale
+      run: |
+        Write-Host "Downloading Tailscale..."
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
+        Start-Process -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList "/S" -Wait
+        Write-Host "Tailscale installed."
+
+    - name: Connect to Tailscale Network
+      env:
+        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+      run: |
+        # Connect this runner to your Tailscale network
+        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="github-rdp-runner" --accept-routes
+        Start-Sleep -Seconds 8
+
+        # Get and display the Tailscale IP
+        $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        Write-Host "=============================================="
+        Write-Host "  TAILSCALE IP : $tsIP"
+        Write-Host "  Hostname     : github-rdp-runner"
+        Write-Host "  Username     : runneradmin"
+        Write-Host "  Password     : p@ssw0rd!"
+        Write-Host ""
+        Write-Host "  Open Tailscale on your PC -> you'll see"
+        Write-Host "  'github-rdp-runner' appear -> use that IP"
+        Write-Host "  in Remote Desktop Connection."
+        Write-Host "=============================================="
+
+        # Save IP to checkpoint folder
+        Set-Content -Path "C:\checkpoint_data\last_tailscale_ip.txt" -Value $tsIP
+
+    # ─────────────────────────────────────────────
+    # STEP 6: Auto-save checkpoint every 50 min
+    # ─────────────────────────────────────────────
+    - name: Keep Alive + Auto Checkpoint
+      run: |
+        $totalMinutes  = 320
+        $checkpointEvery = 50
+        $elapsed = 0
+
+        Write-Host "Session live. Auto-checkpoint every $checkpointEvery minutes."
+
+        while ($elapsed -lt $totalMinutes) {
+          $wait = [Math]::Min($checkpointEvery, $totalMinutes - $elapsed)
+          Write-Host "--- Sleeping $wait min | Elapsed: $elapsed min ---"
+          Start-Sleep -Seconds ($wait * 60)
+          $elapsed += $wait
+
+          $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+          Set-Content -Path "C:\checkpoint_data\checkpoint.txt" -Value "Last checkpoint: $ts`nElapsed: $elapsed min"
+          Write-Host "=== Checkpoint saved at $ts ==="
+        }
+
+        Write-Host "Session ending. Saving final checkpoint..."
+
+    # ─────────────────────────────────────────────
+    # STEP 7: Final checkpoint save (always runs)
+    # ─────────────────────────────────────────────
+    - name: Save Final Checkpoint
+      if: always()
+      run: |
+        $ts = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        New-Item -ItemType Directory -Force -Path "C:\checkpoint_data" | Out-Null
+        Set-Content -Path "C:\checkpoint_data\checkpoint.txt" -Value "Last checkpoint: $ts`nSession ended."
+        Write-Host "Final checkpoint saved at $ts"
+
+    - name: Upload Work Files as Artifact (Backup)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: rdp-session-mywork
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data\checkpoint.txt
+        retention-days: 30
+
+    - name: Cache Checkpoint for Next Run
+      if: always()
+      uses: actions/cache@v4
+      with:
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data
+        key: rdp-checkpoint-tailscale
