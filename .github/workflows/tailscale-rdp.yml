@@ -91,36 +91,28 @@ jobs:
 
     # ─────────────────────────────────────────────
     # STEP 5: Install & Connect Tailscale
+    # Uses the official Tailscale GitHub Action
     # ─────────────────────────────────────────────
-    - name: Install Tailscale
-      run: |
-        Write-Host "Downloading Tailscale..."
-        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.exe" -OutFile "$env:TEMP\tailscale-setup.exe"
-        Start-Process -FilePath "$env:TEMP\tailscale-setup.exe" -ArgumentList "/S" -Wait
-        Write-Host "Tailscale installed."
+    - name: Connect to Tailscale
+      uses: tailscale/github-action@v3
+      with:
+        authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        hostname: github-rdp-runner
 
-    - name: Connect to Tailscale Network
-      env:
-        TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+    - name: Show RDP Connection Info
       run: |
-        # Connect this runner to your Tailscale network
-        & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=$env:TAILSCALE_AUTH_KEY --hostname="github-rdp-runner" --accept-routes
-        Start-Sleep -Seconds 8
-
-        # Get and display the Tailscale IP
-        $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4
+        Start-Sleep -Seconds 5
+        $tsIP = tailscale ip -4
         Write-Host "=============================================="
         Write-Host "  TAILSCALE IP : $tsIP"
         Write-Host "  Hostname     : github-rdp-runner"
         Write-Host "  Username     : runneradmin"
         Write-Host "  Password     : p@ssw0rd!"
         Write-Host ""
-        Write-Host "  Open Tailscale on your PC -> you'll see"
-        Write-Host "  'github-rdp-runner' appear -> use that IP"
-        Write-Host "  in Remote Desktop Connection."
+        Write-Host "  Open Tailscale app on your PC"
+        Write-Host "  You will see 'github-rdp-runner' appear"
+        Write-Host "  Use that IP in Remote Desktop Connection"
         Write-Host "=============================================="
-
-        # Save IP to checkpoint folder
         Set-Content -Path "C:\checkpoint_data\last_tailscale_ip.txt" -Value $tsIP
 
     # ─────────────────────────────────────────────
