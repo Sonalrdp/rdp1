@@ -1,0 +1,165 @@
+name: Playit RDP Tunnel (With Checkpoint Resume)
+
+on:
+  workflow_dispatch:
+    inputs:
+      restore_checkpoint:
+        description: 'Restore from last checkpoint? (yes/no)'
+        required: false
+        default: 'yes'
+
+jobs:
+  setup-rdp-tunnel:
+    runs-on: windows-latest
+    timeout-minutes: 360  # 6 hours max
+
+    steps:
+    # ─────────────────────────────────────────────
+    # STEP 1: Checkout repo
+    # ─────────────────────────────────────────────
+    - name: Check out the repository
+      uses: actions/checkout@v3
+
+    # ─────────────────────────────────────────────
+    # STEP 2: Restore checkpoint from cache
+    # This restores your saved work/data folder
+    # ─────────────────────────────────────────────
+    - name: Restore Checkpoint Cache
+      id: restore-cache
+      if: ${{ github.event.inputs.restore_checkpoint == 'yes' }}
+      uses: actions/cache@v3
+      with:
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data
+        key: rdp-checkpoint-main
+        restore-keys: |
+          rdp-checkpoint-
+
+    - name: Check Checkpoint Status
+      run: |
+        if (Test-Path "C:\checkpoint_data\checkpoint.txt") {
+          $info = Get-Content "C:\checkpoint_data\checkpoint.txt"
+          Write-Host "=== CHECKPOINT FOUND ==="
+          Write-Host $info
+          Write-Host "========================"
+        } else {
+          Write-Host "No checkpoint found - starting fresh session"
+        }
+
+    # ─────────────────────────────────────────────
+    # STEP 3: Download Playit (skip if cached)
+    # ─────────────────────────────────────────────
+    - name: Download and Install Playit
+      run: |
+        if (!(Test-Path "$env:USERPROFILE\playit.exe")) {
+          Write-Host "Downloading Playit..."
+          Invoke-WebRequest -Uri "https://github.com/playit-cloud/playit-agent/releases/download/v0.15.26/playit-windows-x86_64-signed.exe" -OutFile "$env:USERPROFILE\playit.exe"
+          Start-Sleep -Seconds 3
+        } else {
+          Write-Host "Playit already exists, skipping download."
+        }
+
+    # ─────────────────────────────────────────────
+    # STEP 4: Enable Remote Desktop
+    # ─────────────────────────────────────────────
+    - name: Enable Remote Desktop (RDP)
+      run: |
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -name "UserAuthentication" -Value 1
+        Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText "p@ssw0rd!" -Force)
+        Write-Host "RDP Enabled. Username: runneradmin | Password: p@ssw0rd!"
+
+    # ─────────────────────────────────────────────
+    # STEP 5: Create work folders
+    # ─────────────────────────────────────────────
+    - name: Setup Work Directories
+      run: |
+        New-Item -ItemType Directory -Force -Path "C:\Users\runneradmin\Desktop\MyWork" | Out-Null
+        New-Item -ItemType Directory -Force -Path "C:\checkpoint_data" | Out-Null
+        
+        # Write session info to desktop
+        $sessionInfo = @"
+        === RDP Session Info ===
+        Started: $(Get-Date)
+        Username: runneradmin
+        Password: p@ssw0rd!
+        
+        Your files are saved in: C:\Users\runneradmin\Desktop\MyWork
+        Checkpoints auto-save every 50 minutes.
+        "@
+        Set-Content -Path "C:\Users\runneradmin\Desktop\SESSION_INFO.txt" -Value $sessionInfo
+
+    # ─────────────────────────────────────────────
+    # STEP 6: Start Playit Tunnel
+    # ─────────────────────────────────────────────
+    - name: Start Playit RDP Tunnel
+      env:
+        PLAYIT_AUTH_KEY: ${{ secrets.PL }}
+      run: |
+        Start-Process -FilePath "$env:USERPROFILE\playit.exe" -ArgumentList "--secret $env:PLAYIT_AUTH_KEY" -NoNewWindow
+        Start-Sleep -Seconds 5
+        Write-Host "Playit tunnel started. Check your Playit dashboard for the RDP address."
+
+    # ─────────────────────────────────────────────
+    # STEP 7: Auto-checkpoint loop + keep alive
+    # Saves checkpoint every 50 minutes
+    # Total: ~5.5 hours of RDP, then saves before dying
+    # ─────────────────────────────────────────────
+    - name: Keep Alive + Auto Checkpoint Every 50 Minutes
+      run: |
+        $totalMinutes = 320   # ~5 hr 20 min (leaves buffer for final save)
+        $checkpointEvery = 50 # Save every 50 minutes
+        $elapsed = 0
+
+        Write-Host "Session running. Will auto-checkpoint every $checkpointEvery minutes."
+
+        while ($elapsed -lt $totalMinutes) {
+          $waitMinutes = [Math]::Min($checkpointEvery, $totalMinutes - $elapsed)
+          Write-Host "--- Sleeping $waitMinutes min | Total elapsed: $elapsed min ---"
+          Start-Sleep -Seconds ($waitMinutes * 60)
+          $elapsed += $waitMinutes
+
+          # Save checkpoint
+          $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+          $checkpointText = @"
+        Last checkpoint: $timestamp
+        Session elapsed: $elapsed minutes
+        Files are in: C:\Users\runneradmin\Desktop\MyWork
+        "@
+          Set-Content -Path "C:\checkpoint_data\checkpoint.txt" -Value $checkpointText
+          Write-Host "=== CHECKPOINT SAVED at $timestamp (elapsed: $elapsed min) ==="
+        }
+
+        Write-Host "Session ending. Performing final checkpoint save..."
+
+    # ─────────────────────────────────────────────
+    # STEP 8: Final checkpoint save (always runs)
+    # ─────────────────────────────────────────────
+    - name: Save Final Checkpoint
+      if: always()
+      run: |
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        New-Item -ItemType Directory -Force -Path "C:\checkpoint_data" | Out-Null
+        Set-Content -Path "C:\checkpoint_data\checkpoint.txt" -Value "Last checkpoint: $timestamp`nSession ended gracefully."
+        Write-Host "Final checkpoint written at $timestamp"
+
+    - name: Upload Checkpoint as Artifact (Backup)
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: rdp-session-checkpoint
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data\checkpoint.txt
+        retention-days: 30
+
+    - name: Save Checkpoint to Cache (For Next Run Resume)
+      if: always()
+      uses: actions/cache@v3
+      with:
+        path: |
+          C:\Users\runneradmin\Desktop\MyWork
+          C:\checkpoint_data
+        key: rdp-checkpoint-main
