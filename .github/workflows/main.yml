@@ -18,7 +18,7 @@ jobs:
     # STEP 1: Checkout repo
     # ─────────────────────────────────────────────
     - name: Check out the repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     # ─────────────────────────────────────────────
     # STEP 2: Restore checkpoint from cache
@@ -27,7 +27,7 @@ jobs:
     - name: Restore Checkpoint Cache
       id: restore-cache
       if: ${{ github.event.inputs.restore_checkpoint == 'yes' }}
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           C:\Users\runneradmin\Desktop\MyWork
@@ -147,7 +147,7 @@ jobs:
 
     - name: Upload Checkpoint as Artifact (Backup)
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: rdp-session-checkpoint
         path: |
